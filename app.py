@@ -87,7 +87,13 @@ def kind_of(fid, question):
         return "money"
     if re.search(r"how many|number of|members", t):
         return "count"
-    if "name" in t:
+    # "name of your street / school / bank" is not a person's name.
+    if "name" in t and not re.search(
+            r"street|colony|road|lane|village|town|city|district|mandal|taluk|tehsil|block|state|"
+            r"country|school|college|universit|institut|company|employer|organi[sz]ation|office|"
+            r"bank|branch|hospital|place|area|locality|nagar|ward|post|building|house|flat|"
+            r"apartment|course|scheme|caste|religion|occupation|relation|project|business|shop|"
+            r"product|account holder", t):
         return "name"
     return "text"
 
@@ -337,9 +343,12 @@ def validate(fid, question, value):
 
 def check_answer(fid, question, expected, english_answer):
     out = safe(llm_json,
-        f"A user filling a form was asked: '{question}'. Expected: {expected}.\n"
+        f"A user filling a form was asked: '{question}' (hint: usually {expected}).\n"
         f"Their spoken answer (translated to English): '{english_answer}'.\n"
-        "Write numbers as plain digits (e.g. 250000, not 2.5 lakh).\n"
+        "The question itself decides what fits; the hint is only a guide. Pull out just the "
+        "part that answers the question and ignore other chatter. Write numbers as plain "
+        "digits (e.g. 250000, not 2.5 lakh). Be lenient: mark it invalid only if the answer "
+        "clearly does not answer the question.\n"
         'Reply ONLY with JSON: {"value": "<clean value for the form>", '
         '"valid": true/false, "issue": "<short reason if invalid, else empty>"}')
     res = {"value": english_answer, "valid": True, "issue": ""}
@@ -774,6 +783,8 @@ st.progress(done / len(fields), text=f"{done}/{len(fields)} answered")
 if i < len(fields):
     fid, q_en, expected = fields[i]
     kind = field_kind(fid, q_en)
+    if expected in EXPECTED.values():   # recompute generic hints, so older imported forms pick up fixes
+        expected = EXPECTED[kind]
 
     if not simple:
         with st.expander("Say everything at once", icon=":material/bolt:"):
