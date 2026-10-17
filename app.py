@@ -547,10 +547,16 @@ if "next_form" in ss:                     # a form was just created; select it
 # ----- Light / dark mode -----
 # Streamlit can't switch its built-in theme without a page reload (which would lose
 # the answers), so dark mode is a set of CSS overrides on top of the light theme.
-dark = st.toggle(":material/dark_mode: Dark", key="dark")
+hero_box = st.container(key="herobox")       # header card; holds the Dark switch and the title
+dark = hero_box.toggle(":material/dark_mode: Dark", key="dark")
 st.markdown("""<style>
-.st-key-dark {background:transparent !important; position:fixed; top:.85rem; right:7.2rem; z-index:999991; width:auto !important}
-.st-key-dark + div, .element-container:has(.st-key-dark) {margin:0}
+/* Sits in the top-right corner of the orange header card, clear of Streamlit's own toolbar
+   (which gains Share / star / edit / GitHub buttons when deployed). */
+.st-key-herobox {position:relative; gap:0}
+.st-key-dark {position:absolute !important; top:1rem; right:1.3rem;
+  z-index:5; width:auto !important; background:transparent !important}
+.st-key-dark label, .st-key-dark p, .st-key-dark span {color:#fff !important}
+.element-container:has(.st-key-dark), [data-testid="stElementContainer"]:has(.st-key-dark) {height:0; margin:0}
 </style>""", unsafe_allow_html=True)
 LIGHT_CSS = """
 .st-key-setup, .st-key-qcard {background:#FFFFFF; box-shadow:0 6px 22px rgba(30,27,24,.07)}
@@ -602,8 +608,8 @@ SLOT = 3  # seconds each name stays on screen
 _names = "".join(f'<span style="animation-delay:{n * SLOT}s">{html.escape(t)}</span>'
                  for n, t in enumerate(APP_NAMES))
 _chips = "".join(f"<span>{html.escape(native)}</span>" for _, native in LANGS.values())
-st.markdown(f"""<style>
-.block-container {{padding-top:3.2rem; max-width:780px}}
+hero_box.markdown(f"""<style>
+.block-container {{padding-top:4.6rem; max-width:780px}}
 .hero {{padding:1.3rem 1.5rem 1.1rem; border-radius:22px; color:#fff; margin-bottom:.6rem;
   background:linear-gradient(135deg,#FF8A3D 0%,#E4572E 45%,#9C2C77 100%);
   box-shadow:0 10px 30px rgba(228,87,46,.25)}}
@@ -617,6 +623,9 @@ st.markdown(f"""<style>
   {100 / len(APP_NAMES) * 0.85:.2f}% {{opacity:1; transform:none}}
   {100 / len(APP_NAMES):.2f}% {{opacity:0; transform:translateY(-70%)}}
   100% {{opacity:0}} }}
+@media (max-width: 640px) {{
+  .hero {{padding-top:2.8rem}} .hero .rot {{height:2.6rem}}
+  .hero .rot span {{font-size:1.9rem; line-height:2.6rem}} }}
 @media (prefers-reduced-motion: reduce) {{
   .hero .rot span {{animation:none}} .hero .rot span:first-child {{opacity:1}} }}
 .hero .tag {{margin:.25rem 0 .7rem; font-size:1.05rem; opacity:.95}}
