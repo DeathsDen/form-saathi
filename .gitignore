@@ -1,0 +1,14 @@
+# Secrets - never commit your API key
+.streamlit/secrets.toml
+.env
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Local leftovers
+*.bak
+filled_form*.json
+.DS_Store

@@ -1,0 +1,4 @@
+streamlit>=1.50
+sarvamai
+qrcode>=8.0
+httpx

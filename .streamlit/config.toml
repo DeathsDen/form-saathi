@@ -1,0 +1,10 @@
+[theme]
+base = "light"
+primaryColor = "#E4572E"
+backgroundColor = "#FFFAF4"
+secondaryBackgroundColor = "#FFF0E1"
+textColor = "#1E1B18"
+baseRadius = "0.75rem"
+
+[browser]
+gatherUsageStats = false
