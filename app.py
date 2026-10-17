@@ -174,11 +174,22 @@ def transcribe(audio_bytes, lang):
 def identify(text):
     return client.text.identify_language(input=text[:1000]).language_code
 
-def llm(prompt):
-    r = client.chat.completions(model=LLM_MODEL,
-                                messages=[{"role": "user", "content": prompt}])
-    text = r.choices[0].message.content or ""
-    return re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
+def llm(prompt, json_mode=False):
+    # Low reasoning effort: with the default, sarvam-105b can spend its whole token
+    # budget thinking on long inputs (like a scanned form) and return no answer at all.
+    kw = dict(reasoning_effort="low", max_tokens=6000, temperature=0.2)
+    if json_mode:
+        kw["response_format"] = {"type": "json_object"}
+    for _ in range(2):   # one retry: an empty reply is occasional, not permanent
+        r = client.chat.completions(model=LLM_MODEL,
+                                    messages=[{"role": "user", "content": prompt}], **kw)
+        text = re.sub(r"<think>.*?</think>", "", r.choices[0].message.content or "", flags=re.S).strip()
+        if text:
+            return text
+    raise ValueError("the AI gave an empty answer")
+
+def llm_json(prompt):
+    return llm(prompt, json_mode=True)
 
 def read_document(data, filename, lang):
     """Run Sarvam Document Intelligence on a photo/PDF and return its text."""
@@ -196,8 +207,9 @@ def read_document(data, filename, lang):
         out = job.download_output(os.path.join(d, "out"))
         if zipfile.is_zipfile(out):
             with zipfile.ZipFile(out) as z:
-                return "\n".join(z.read(n).decode("utf-8", "ignore") for n in z.namelist()
-                                 if n.endswith((".md", ".html", ".txt", ".json")))
+                # Prefer the readable text; the .json files are layout metadata.
+                names = [n for n in z.namelist() if n.endswith((".md", ".txt", ".html"))] or z.namelist()
+                return "\n".join(z.read(n).decode("utf-8", "ignore") for n in names)
         with open(out, encoding="utf-8", errors="ignore") as f:
             return f.read()
 
@@ -324,7 +336,7 @@ def validate(fid, question, value):
     return value, "Please choose one of: " + ", ".join(opts)
 
 def check_answer(fid, question, expected, english_answer):
-    out = safe(llm,
+    out = safe(llm_json,
         f"A user filling a form was asked: '{question}'. Expected: {expected}.\n"
         f"Their spoken answer (translated to English): '{english_answer}'.\n"
         "Write numbers as plain digits (e.g. 250000, not 2.5 lakh).\n"
@@ -356,7 +368,7 @@ def rough_extract(text, fields):
     return out
 
 def extract_all(text_en, fields):
-    out = safe(llm,
+    out = safe(llm_json,
         "Fields to fill:\n" + "\n".join(f"- {fid}: {q}" for fid, q, _ in fields) +
         f"\n\nThe applicant said (translated to English): '{text_en}'\n"
         "Extract each field's value. Write numbers as plain digits. "
@@ -374,32 +386,56 @@ _LABEL_HINT = re.compile(
     r"\b(name|phone|mobile|e-?mail|address|age|date of birth|dob|gender|city|village|town|district|"
     r"state|income|occupation|aadhaar|pin ?code|course|class|school|college|father|mother|guardian)\b", re.I)
 
+def _is_foreign(text):
+    return bool(re.search(r"[^\x00-\x7F₹’‘“”–—]", text or ""))
+
 def questions_from_text(text):
-    """Rule-based fallback: pick question-like lines out of copied form text."""
+    """Rule-based fallback: pick question-like lines out of form text."""
     out = []
     for line in (text or "").splitlines():
         raw = line.strip()
-        q = raw.strip("*").strip().rstrip(":").strip()
-        if not 3 <= len(q) <= 150 or _JUNK.search(q):
+        # Headings and whole-line bold text are titles, not questions.
+        if not raw or raw.startswith("#") or re.fullmatch(r"\*\*[^*]+\*\*:?", raw):
             continue
-        if raw.endswith(("?", ":", "*")) or _LABEL_HINT.search(q):
+        l = re.sub(r"^[>\-•\s]+", "", raw)
+        l = re.sub(r"^\(?\d{1,2}[.)]\s*", "", l)            # "1." / "(2)" numbering
+        has_blank = bool(re.search(r"_{3,}|\.{4,}", l))
+        l = re.sub(r"_{3,}|\.{4,}", " ", l).strip()
+        required = l.endswith("*") and not l.endswith("**")
+        q = l.replace("**", "").strip("*").strip()
+        ends_colon = q.endswith(":")
+        q = q.split(":")[0].strip() if ":" in q else q
+        if " / " in q:   # bilingual label like "పేరు / Name": keep the English part
+            latin = [p.strip() for p in q.split(" / ") if re.search(r"[A-Za-z]", p) and not _is_foreign(p)]
+            if latin:
+                q = " / ".join(latin)
+        if not 3 <= len(q) <= 150 or _JUNK.search(q) or re.search(
+                r"office use|signature|seal|verified by|^note\b|instruction", q, re.I):
+            continue
+        if has_blank or required or ends_colon or raw.endswith("?") or _LABEL_HINT.search(q):
             if q.casefold() not in (o.casefold() for o in out):
                 out.append(q)
     return out[:20]
 
 def fields_from_text(text):
-    """Turn the text of any form into (title, questions). Uses the LLM, else simple rules."""
-    got = parse_json(safe(llm,
+    """Turn the text of any form into (title, English questions, used_ai)."""
+    got = parse_json(safe(llm_json,
         "Below is the text of a form (copied from a website or read from a photo; it may be in an "
         "Indian language). List every blank the applicant has to fill in. Skip office-use-only parts, "
         'signatures and website menus. Reply ONLY with JSON: {"title": "<form title in English>", '
         '"fields": ["<a short, polite English question asking for that field>", ...]} '
         "with at most 20 fields.\n\n" + (text or "")[:6000]), {})
     if isinstance(got, dict) and got.get("fields"):
-        return str(got.get("title") or "Imported form"), [str(q) for q in got["fields"][:20]]
-    first = next((l.strip() for l in (text or "").splitlines() if l.strip()), "")
-    title = first[:60] if 3 <= len(first) <= 80 else "Pasted form"
-    return title, [q for q in questions_from_text(text) if q != first]
+        title, qs, used_ai = str(got.get("title") or "Imported form"), [str(q) for q in got["fields"][:20]], True
+    else:
+        first = next((l.strip().strip("#* ") for l in (text or "").splitlines() if l.strip()), "")
+        title = first[:60] if 3 <= len(first) <= 80 else "Imported form"
+        qs, used_ai = [q for q in questions_from_text(text) if q != first], False
+    # Everything inside the app works in English; translate anything that isn't.
+    qs = [safe(translate, q, "en-IN", fallback=q) if _is_foreign(q) else q for q in qs]
+    if _is_foreign(title):
+        title = safe(translate, title, "en-IN", fallback=title)
+    return title, qs, used_ai
 
 GF_TYPES = {0: "short", 1: "paragraph", 2: "choice", 3: "dropdown", 4: "checkboxes",
             5: "scale", 9: "date", 10: "time"}
@@ -607,6 +643,9 @@ h3 {font-size:2.4rem !important}
 if not API_KEY and not ss.demo:
     st.error("Set SARVAM_API_KEY first, or turn on Demo mode in the sidebar."); st.stop()
 
+RULES_NOTE = ("The AI couldn't read this form, so the questions were picked with simple rules. "
+              "Check them, and use Skip for anything that isn't a real question.")
+
 def add_form(title, flds, meta=None):
     """Store an imported/created form and switch to it."""
     title = title.strip() or "My form"
@@ -664,8 +703,10 @@ with st.container(border=True, key="setup"):
                 pasted = st.text_area("Copied form text", height=150)
                 if pasted.strip() and st.button("Make questions from this text", type="primary"):
                     with st.spinner("Finding the questions..."):
-                        title, qs = fields_from_text(pasted)
+                        title, qs, used_ai = fields_from_text(pasted)
                     if qs:
+                        if not used_ai:
+                            ss.flash = RULES_NOTE
                         add_form("📋 " + title[:60], [(f"p{n}", q, EXPECTED[kind_of('', q)])
                                                       for n, q in enumerate(qs, 1)])
                     st.warning("Couldn't find any questions in that text.")
@@ -681,8 +722,10 @@ with st.container(border=True, key="setup"):
                         if name.lower().endswith(".jpeg"):
                             name = name[:-5] + ".jpg"
                         text = safe(read_document, pic.getvalue(), name, form_lang)
-                        title, qs = fields_from_text(text) if text else ("", [])
+                        title, qs, used_ai = fields_from_text(text) if text else ("", [], False)
                     if qs:
+                        if not used_ai:
+                            ss.flash = RULES_NOTE
                         add_form("📷 " + title[:60], [(f"s{n}", q, EXPECTED[kind_of('', q)])
                                                       for n, q in enumerate(qs, 1)])
                     st.error("Couldn't read questions from that form. "
@@ -699,7 +742,8 @@ with st.container(border=True, key="setup"):
                     st.warning("Give the form a name and at least one question.")
 
 if "flash" in ss:
-    st.success(ss.pop("flash"))
+    _msg = ss.pop("flash")
+    (st.warning if _msg == RULES_NOTE else st.success)(_msg)
 
 def heard_from(rec, typed):
     """Transcribe a recording or take typed text. Returns (text, language code)."""
